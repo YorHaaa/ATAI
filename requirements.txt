@@ -2,3 +2,9 @@ python-dateutil>=2.5.3
 # urllib3<2.0.0 to avoid warning: "NotOpenSSLWarning: urllib3 v2.0 only supports OpenSSL 1.1.1+"
 # please see 'https://stackoverflow.com/questions/76187256/importerror-urllib3-v2-0-only-supports-openssl-1-1-1-currently-the-ssl-modu'
 urllib3>=1.25.3, <2.0.0
+
+speakeasypy~=1.0.0
+rdflib~=7.0.0
+editdistance~=0.8.1
+setuptools~=75.2.0
+spacy~=3.7.5

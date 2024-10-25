@@ -1,9 +1,9 @@
-import traceback
-
-from speakeasypy import Speakeasy, Chatroom
-from typing import List
 import time
-import SparqlExecute
+import traceback
+from typing import List
+
+from Questions import Question
+from speakeasypy import Speakeasy, Chatroom
 
 DEFAULT_HOST_URL = 'https://speakeasy.ifi.uzh.ch'
 listen_freq = 2
@@ -23,7 +23,7 @@ class Agent:
             for room in rooms:
                 if not room.initiated:
                     # send a welcome message if room is not initiated
-                    room.post_messages(f'Hello! This is a welcome message from {room.my_alias}. Please input the SPARQL query which you want to excute')
+                    room.post_messages(f'Hello! This is a welcome message from {room.my_alias}. Please ask me about what you want to know')
                     room.initiated = True
                 # Retrieve messages from this chat room.
                 # If only_partner=True, it filters out messages sent by the current bot.
@@ -36,7 +36,8 @@ class Agent:
 
                     # Implement your agent here
                     try:
-                        result = SparqlExecute.query(message.message)
+                        question = Question(message.message)
+                        result = question.parseQuestion()
                         room.post_messages(result)
                     except Exception:
                         traceback.print_exc()
