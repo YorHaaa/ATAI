@@ -1,5 +1,3 @@
-from typing import final
-
 import numpy as np
 import rdflib
 import editdistance
@@ -44,6 +42,7 @@ class QueryExecutor:
                 label_relation_dict[value].append(key)
             else:
                 label_relation_dict[value] = [key]
+
         self.label_relation_dict = label_relation_dict
 
         # Build embedding dictionary to process embedding questions.
@@ -80,14 +79,12 @@ class QueryExecutor:
         input_entity = entity
         input_predicate = predicate
         print(f"User's input entity : {input_entity}, relation : {input_predicate}")
-        entity_uri = None
-        relation_uri = None
 
         entity_uri, relation_uri = self.__get_URL_By_label(input_entity, input_predicate)
 
         # If relation belong to these word, then just return the object from triple
         if input_predicate in ["cost", "box office", "IMDb ID", "publication date", "node description", "image"]:
-            query = f"""
+            query_template = """
                         PREFIX ddis: <http://ddis.ch/atai/>   
                         PREFIX wd: <http://www.wikidata.org/entity/>   
                         PREFIX wdt: <http://www.wikidata.org/prop/direct/>   
@@ -100,7 +97,7 @@ class QueryExecutor:
                         """
         else:
             # Other relations should find label of object
-            query = f"""
+            query_template = """
                         PREFIX ddis: <http://ddis.ch/atai/>   
                         PREFIX wd: <http://www.wikidata.org/entity/>   
                         PREFIX wdt: <http://www.wikidata.org/prop/direct/>   
@@ -113,19 +110,37 @@ class QueryExecutor:
                             FILTER(LANG(?label) = "en")
                         }}
                         """
-        print("SPARQL STATEMENT : "+ query)
-        return [str(s) for s, in self.graph.query(query)]
+        # Return the search result if there are only 1 entity in user's input.
+        if len(entity_uri) == 1:
+            query = query_template.format(entity_uri=entity_uri[0], relation_uri=relation_uri)
+            print("SPARQL STATEMENT : " + query)
+            return [str(s) for s, in self.graph.query(query)]
+        else:
+            """
+            If there are serval entities have the same label (The God Father - game, movie, ...):
+                1. Find all descriptions of each entity
+                2. Return both search result and description of each entity
+            """
+            labels = []
+            descriptions = self.__get_description_of_entities(entity_uri)
+            for uri in entity_uri:
+                query = query_template.format(entity_uri=uri, relation_uri=relation_uri)
+                print("SPARQL STATEMENT : " + query)
+                label = [str(s) for s, in self.graph.query(query)]
+                labels.append(label)
+
+            return {"labels":labels, "descriptions":descriptions}
+
 
     def queryEmbeddingQuestions(self, entity, predicate):
         # Get entity and predicate from previous step
         input_entity = entity
         input_predicate = predicate
         print(f"User's input entity : {input_entity}, relation : {input_predicate}")
-        entity_uri = None
-        relation_uri = None
 
         # Get URI of entity and relation
         entity_uri, relation_uri = self.__get_URL_By_label(input_entity, input_predicate)
+        entity_uri= entity_uri[0]
         input_entity_embedding = self.entity_embedding_dict[entity_uri]
         input_relation_embedding = self.relation_embedding_dict[relation_uri]
         final_embedding = (input_entity_embedding + input_relation_embedding).reshape((1, -1))
@@ -143,8 +158,7 @@ class QueryExecutor:
         return str(uri).split('/')[-1]
 
     def __is_relation(self, uri):
-        label = self.__get_entity_index(uri)
-        return label[0] == 'P'
+        return uri.startswith("http://www.wikidata.org/prop/direct/")
 
     def __is_entity(self, uri):
         label = self.__get_entity_index(uri)
@@ -155,7 +169,7 @@ class QueryExecutor:
         relation_uri = ""
         # If the entity and predicate already exist in dict, then just get its URI
         if self.label_entity_dict.get(input_entity):
-            entity_uri = str(self.label_entity_dict[input_entity][0])
+            entity_uri = self.label_entity_dict[input_entity]
         else:
             # Max distance between two words
             distance = 1000
@@ -163,7 +177,8 @@ class QueryExecutor:
                 n = editdistance.eval(input_entity, key)
                 if n < distance:
                     distance = n
-                    entity_uri = self.label_entity_dict[key][0]
+                    entity_uri = self.label_entity_dict[key]
+
         # Same as relations
         if self.label_relation_dict.get(input_predicate):
             relation_uri = self.label_relation_dict[input_predicate][0]
@@ -177,8 +192,26 @@ class QueryExecutor:
                     relation_uri = self.label_relation_dict[key][0]
         return entity_uri, relation_uri
 
+    def __get_description_of_entities(self, entity_uris):
+        result = []
+        for uri in entity_uris:
+            query = f"""
+                    PREFIX ddis: <http://ddis.ch/atai/>   
+                    PREFIX wd: <http://www.wikidata.org/entity/>   
+                    PREFIX wdt: <http://www.wikidata.org/prop/direct/>   
+                    PREFIX schema: <http://schema.org/>
+                    PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>  
 
+                    SELECT ?description WHERE {{
+                          <{uri}> schema:description ?description .
+                          FILTER(LANG(?description) = "en")
+                    }}
+                    """
+            description = [str(s) for s, in self.graph.query(query)]
+            result.append(description[0])
+        return result
 
 
 if __name__ == '__main__':
     Q = QueryExecutor()
+    print(Q.queryFactualQuestions("The God Father", "publication date"))

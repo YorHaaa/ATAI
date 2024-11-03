@@ -5,8 +5,6 @@ Core idea:
     3. Return output to user based on templates.
 """
 import spacy
-from markdown_it.rules_inline import entity
-
 from Query import QueryExecutor
 
 model = spacy.load("en_core_web_trf")
@@ -30,12 +28,13 @@ class Question:
         self.queryExecutor = queryExecutor
         # Synonyms words dictionary
         self.synonyms_dict = {
-            'cast member': ['actor', 'actress', 'cast'],
-            'genre': ['type', 'kind'],
+            'cast member': ['actor', 'actress', 'cast', "actors", "actresses", "casts"],
+            'genre': ['type', 'kind', 'genres', 'types'],
             'publication date': ['release', 'date', 'airdate', 'publication', 'launch', 'broadcast', 'released',
                                  'launched'],
             'executive producer': ['showrunner'],
-            'screenwriter': ['scriptwriter', 'screenplay', 'teleplay', 'writer', 'script', 'scenarist', 'story'],
+            'screenwriter': ['scriptwriter', 'screenplay', 'teleplay', 'writer', 'script', 'scenarist', 'story',
+                             'scriptwriters', 'screenplays', 'teleplays', 'writers', 'scripts', 'scenarists', 'stories'],
             'director of photography': ['cinematographer', 'DOP', 'dop'],
             'film editor': ['editor'],
             'production designer': ['designer'],
@@ -84,16 +83,22 @@ class Question:
 
         # Processing factual questions
         query_result = self.queryExecutor.queryFactualQuestions(entity, predicate)
-        if len(query_result) != 0:
-            self.question_type = 0
-            return self.__generateAnswer(query_result)
-        else:
-            # Precessing embedding questions
-            embedding_result = self.queryExecutor.queryEmbeddingQuestions(entity, predicate)
-            if embedding_result:
-                return self.answer_templates["embedding question"].format(embedding_result=embedding_result)
+        if isinstance(query_result, list):
+            if len(query_result) != 0:
+                self.question_type = 0
+                return self.__generateAnswer(query_result)
             else:
-                return "Sorry, I can't answer your question now because of my limited knowledge ~ 🤣"
+                # Precessing embedding questions
+                embedding_result = self.queryExecutor.queryEmbeddingQuestions(entity, predicate)
+                if embedding_result:
+                    return self.answer_templates["embedding question"].format(embedding_result=embedding_result)
+                else:
+                    return "Sorry, I can't answer your question now because of my limited knowledge ~ 🤣"
+        else:
+            answer = f"There are multiple {entity} in my database. I will give you all the information :"
+            for i in range(len(query_result["labels"])):
+                answer += f"\n{i+1}. {entity}: {query_result['descriptions'][i]}. {predicate} : {query_result['labels'][i]})"
+            return answer
 
 
     def __extractEntities(self):
@@ -122,3 +127,7 @@ class Question:
                 return self.answer_templates["factual question default"].format(entity=self.entity, predicate=self.predicate, query_result=query_result)
 
 
+
+if __name__ == '__main__':
+    question = Question("When was The Godfather released?")
+    print(question.parseQuestion())
