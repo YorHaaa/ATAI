@@ -94,13 +94,15 @@ class Question:
 
         label_relation_dict = {}
         for key, value in self.relation_label_dict.items():
+            if "http://www.wikidata.org/entity/" in key:
+                key = key.replace("http://www.wikidata.org/entity/", "http://www.wikidata.org/prop/direct/")
             if value in label_relation_dict:
                 label_relation_dict[value].append(key)
             else:
                 label_relation_dict[value] = [key]
         self.label_relation_dict = label_relation_dict
         self.queryExecutor = QueryExecutor(graph,self.all_label_dict,self.entity_label_dict,self.relation_label_dict
-                                           ,self.label_relation_dict,self.label_relation_dict)
+                                           ,self.label_entity_dict,self.label_relation_dict)
 
     def __get_entity_index(self, uri):
         return str(uri).split('/')[-1]
@@ -157,7 +159,7 @@ class Question:
             return self.recommender.recommend_by(entities)
 
         # Processing CrowdSourcing questions
-        entity_idx = self.__get_entity_index(self.label_entity_dict.get(self.entities[0])[0])
+        entity_idx = self.__get_entity_index(self.label_entity_dict.get(max(self.entities, key=len, default=''))[0])
         relation_idx = self.__get_entity_index(self.label_relation_dict.get(self.predicate)[0])
         crowd_result = self.queryExecutor.queryCrowdsourceQuestions(entity_idx,relation_idx)
         if crowd_result:
@@ -171,13 +173,13 @@ class Question:
             return ans
 
         # Processing factual questions
-        query_result = self.queryExecutor.queryFactualQuestions(self.entities[0], self.predicate)
+        query_result = self.queryExecutor.queryFactualQuestions(max(self.entities, key=len, default=''), self.predicate)
         if len(query_result) != 0:
             self.question_type = 0
             return self.__generateAnswer(query_result)
         else:
             # Precessing embedding questions
-            embedding_result = self.queryExecutor.queryEmbeddingQuestions(self.entities[0], self.predicate)
+            embedding_result = self.queryExecutor.queryEmbeddingQuestions(max(self.entities, key=len, default=''), self.predicate)
             if embedding_result:
                 return self.answer_templates["embedding question"].format(embedding_result=embedding_result)
             else:
@@ -199,14 +201,14 @@ class Question:
         # Factual questions
         if self.question_type == 0 :
             if self.predicate == "publication date":
-                return self.answer_templates["publication date"].format(entity=self.entity, query_result=query_result)
+                return self.answer_templates["publication date"].format(entity=max(self.entities, key=len, default=''), query_result=query_result)
             elif self.predicate == "genre":
-                return self.answer_templates["genre"].format(entity=self.entity, query_result=query_result)
+                return self.answer_templates["genre"].format(entity=max(self.entities, key=len, default=''), query_result=query_result)
             elif self.predicate == "box office":
-                return self.answer_templates["box office"].format(entity=self.entity, query_result=query_result)
+                return self.answer_templates["box office"].format(entity=max(self.entities, key=len, default=''), query_result=query_result)
             elif self.predicate == "IMDb ID":
-                return self.answer_templates["IMDb ID"].format(entity=self.entity, query_result=query_result)
+                return self.answer_templates["IMDb ID"].format(entity=max(self.entities, key=len, default=''), query_result=query_result)
             else:
-                return self.answer_templates["factual question default"].format(entity=self.entity, predicate=self.predicate, query_result=query_result)
+                return self.answer_templates["factual question default"].format(entity=max(self.entities, key=len, default=''), predicate=self.predicate, query_result=query_result)
 
 
