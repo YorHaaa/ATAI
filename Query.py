@@ -1,42 +1,19 @@
 import numpy as np
-import rdflib
+import pandas as pd
 import editdistance
-from rdflib import RDFS
 import csv
 from sklearn.metrics import pairwise_distances
 
+crowd_data = pd.read_csv('Dataset/crowd_data/crowd_data.tsv', sep='\t')
+
 class QueryExecutor:
-    def __init__(self, graph):
+    def __init__(self, graph, all_label_dict, entity_label_dict, relation_label_dict,label_entity_dict,label_relation_dict):
         self.graph = graph
 
-        # Namespace
-        self.WD = rdflib.Namespace('http://www.wikidata.org/entity/')
-        self.WDT = rdflib.Namespace('http://www.wikidata.org/prop/direct/')
-        self.DDIS = rdflib.Namespace('http://ddis.ch/atai/')
-        self.RDFS = rdflib.namespace.RDFS
-        self.SCHEMA = rdflib.Namespace('http://schema.org/')
-
-        # Build entity_label and relation_label dictionary
-        self.all_label_dict = {str(sub): str(obj) for sub, pre, obj in graph.triples((None,RDFS.label,None))}
-        self.entity_label_dict = {entity:label for entity, label in self.all_label_dict.items() if
-                                    self.__is_entity(entity)}
-        self.relation_label_dict = {entity:label for entity, label in self.all_label_dict.items() if
-                                    self.__is_relation(entity)}
-        # Reverse following dictionaries, and store same label's URIs as an array
-        label_entity_dict = {}
-        for key, value in self.entity_label_dict.items():
-            if value in label_entity_dict:
-                label_entity_dict[value].append(key)
-            else:
-                label_entity_dict[value] = [key]
+        self.all_label_dict = all_label_dict
+        self.entity_label_dict = entity_label_dict
+        self.relation_label_dict = relation_label_dict
         self.label_entity_dict = label_entity_dict
-
-        label_relation_dict = {}
-        for key, value in self.relation_label_dict.items():
-            if value in label_relation_dict:
-                label_relation_dict[value].append(key)
-            else:
-                label_relation_dict[value] = [key]
         self.label_relation_dict = label_relation_dict
 
         # Build embedding dictionary to process embedding questions.
@@ -60,6 +37,11 @@ class QueryExecutor:
         self.idx_relation_dict = idx_relation_dict
         self.entity_embedding_dict = entity_embedding_dict
         self.relation_embedding_dict = relation_embedding_dict
+
+        # Load crowdsource dataset
+        self.crowdsource_data = crowd_data
+        self.crowdsource_subject_list = self.crowdsource_data['Input1ID'].unique()
+        self.crowdsource_predicate_list = self.crowdsource_data['Input2ID'].unique()
 
     def querySPARQL(self, sparql):
         return str([str(s) for s, in self.graph.query(sparql)])
@@ -127,19 +109,6 @@ class QueryExecutor:
         return self.entity_label_dict[highest_similarity_entity_URI]
 
 
-
-
-    def __get_entity_index(self, uri):
-        return str(uri).split('/')[-1]
-
-    def __is_relation(self, uri):
-        label = self.__get_entity_index(uri)
-        return label[0] == 'P'
-
-    def __is_entity(self, uri):
-        label = self.__get_entity_index(uri)
-        return label[0] == 'Q'
-
     def __get_URL_By_label(self, input_entity, input_predicate):
         entity_uri = ""
         relation_uri = ""
@@ -166,3 +135,35 @@ class QueryExecutor:
                     distance = n
                     relation_uri = self.label_relation_dict[key][0]
         return entity_uri, relation_uri
+
+    def queryCrowdsourceQuestions(self, entity_idx, relation_idx):
+        if "wd:"+entity_idx in self.crowdsource_subject_list:
+            if "wdt:" + relation_idx in self.crowdsource_predicate_list:
+                selected_answers = self.crowdsource_data[
+                    (self.crowdsource_data['Input1ID'] == "wd:" + entity_idx) & (
+                                    self.crowdsource_data['Input2ID'] == "wdt:" + relation_idx)]
+            else:
+                selected_answers = self.crowdsource_data[self.crowdsource_data['Input1ID'] == "wd:"+ entity_idx]
+            support = (selected_answers['AnswerLabel'] == 'CORRECT').sum()
+            reject = (selected_answers['AnswerLabel'] == 'INCORRECT').sum()
+            ans = selected_answers['Input3ID'].unique()[0]
+            if "wd:" in ans:
+                ans = self.all_label_dict["http://www.wikidata.org/entity/"+ans.split(":")[-1]]
+            batch_idx = selected_answers['HITTypeId'].unique()[0]
+            selected_batch = self.crowdsource_data[self.crowdsource_data['HITTypeId'] == batch_idx]
+            Pj = [round(((selected_batch['AnswerLabel'] == 'CORRECT').sum() / selected_batch.shape[0]), 3),
+                      round(((selected_batch['AnswerLabel'] == 'INCORRECT').sum() / selected_batch.shape[0]), 3)]
+            question_idx = selected_batch['HITId'].unique().tolist()
+            Pi = []
+            for idx in question_idx:
+                n = (selected_batch['HITId'] == idx).sum()
+                pos = ((selected_batch['HITId'] == idx) & (selected_batch['AnswerLabel'] == 'CORRECT')).sum()
+                neg = ((selected_batch['HITId'] == idx) & (selected_batch['AnswerLabel'] == 'INCORRECT')).sum()
+                # print(f'{n,pos,neg}')
+                Pi.append(round((pos * (pos - 1) + neg * (neg - 1)) / (n * (n - 1)), 3))
+            Po = round((sum(Pi) / len(question_idx)), 3)
+            Pe = sum(x ** 2 for x in Pj)
+            inter_rater = round(((Po-Pe) / (1-Pe)),3)
+            return inter_rater,support,reject,ans
+        else:
+            return None

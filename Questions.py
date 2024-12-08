@@ -7,7 +7,6 @@ Core idea:
 import rdflib
 import spacy
 from rdflib import RDFS
-# Use a pipeline as a high-level helper
 from Query import QueryExecutor
 from Recommender import Recommender
 
@@ -16,24 +15,23 @@ print("----Spacy model load succeed----")
 graph = rdflib.Graph()
 graph.parse('Dataset/14_graph.nt', format='turtle')
 print("----KG load succeed----")
-queryExecutor = QueryExecutor(graph)
 recommender = Recommender(graph)
 
 class Question:
 
     def __init__(self, question_text):
+        self.entities = None
         self.question_text = question_text
         self.doc = None
         self.question_type = None
         self.question_type_dict = {
             "factual question" : 0,
             "embedding question" : 1,
-            "recommendation question" : 2
+            "recommendation question" : 2,
+            "crowdsource question" : 3
         }
         self.predicate = None
-        self.entity = None
         self.answer = None
-        self.queryExecutor = queryExecutor
         self.recommender = recommender
         # Synonyms words dictionary
         self.synonyms_dict = {
@@ -70,10 +68,39 @@ class Question:
                                    "Here is the answer compute by embedding: {embedding_result}",
             "Recommendation question" : "Here are the top 5 recommendations: {rec_result}"
         }
+        self.graph = graph
+
+        # Namespace
+        self.WD = rdflib.Namespace('http://www.wikidata.org/entity/')
+        self.WDT = rdflib.Namespace('http://www.wikidata.org/prop/direct/')
+        self.DDIS = rdflib.Namespace('http://ddis.ch/atai/')
+        self.RDFS = rdflib.namespace.RDFS
+        self.SCHEMA = rdflib.Namespace('http://schema.org/')
+
+        # Build entity_label and relation_label dictionary
         self.all_label_dict = {str(sub): str(obj) for sub, pre, obj in graph.triples((None, RDFS.label, None))}
+        self.entity_label_dict = {entity: label for entity, label in self.all_label_dict.items() if
+                                  self.__is_entity(entity)}
         self.relation_label_dict = {entity: label for entity, label in self.all_label_dict.items() if
                                     self.__is_relation(entity)}
+        # Reverse following dictionaries, and store same label's URIs as an array
+        label_entity_dict = {}
+        for key, value in self.entity_label_dict.items():
+            if value in label_entity_dict:
+                label_entity_dict[value].append(key)
+            else:
+                label_entity_dict[value] = [key]
+        self.label_entity_dict = label_entity_dict
 
+        label_relation_dict = {}
+        for key, value in self.relation_label_dict.items():
+            if value in label_relation_dict:
+                label_relation_dict[value].append(key)
+            else:
+                label_relation_dict[value] = [key]
+        self.label_relation_dict = label_relation_dict
+        self.queryExecutor = QueryExecutor(graph,self.all_label_dict,self.entity_label_dict,self.relation_label_dict
+                                           ,self.label_relation_dict,self.label_relation_dict)
 
     def __get_entity_index(self, uri):
         return str(uri).split('/')[-1]
@@ -81,6 +108,10 @@ class Question:
     def __is_relation(self, uri):
         label = self.__get_entity_index(uri)
         return label[0] == 'P'
+
+    def __is_entity(self, uri):
+        label = self.__get_entity_index(uri)
+        return label[0] == 'Q'
 
     def parseQuestion(self):
         # If the user's input is a SPARQL query, then just returns the executing result.
@@ -90,23 +121,26 @@ class Question:
         self.doc = model(self.question_text)
 
         # NER
-        entities = self.__extractEntities()
-        self.entity = entities[0]
-
-        # Recommendation Questions
-        if any(word in self.question_text.lower() for word in ["recommend","recommended","advise","suggest",
-                                                               "similar", "like"]):
-            print("rec_mode")
-            print(entities)
-            return  self.recommender.recommend_by(entities)
+        entities = []
+        if self.__extractEntities():
+            entities = self.__extractEntities()
+        else:
+            for entity, label in self.entity_label_dict.items():
+                if label.lower() in self.question_text.lower() and len(label)>= 6:
+                    entities.append(label)
+        self.entities = entities
 
         # Get predicates from the input sentences
-        if self.__extractRelations():
-            predicate = self.__extractRelations()[0]
-        else:
-            for relation, label in self.relation_label_dict.items():
-                if label in self.question_text.lower():
-                    predicate = label
+        predicate = None
+        for relation, label in self.relation_label_dict.items():
+            if label.lower() in self.question_text.lower():
+                predicate = label
+
+        if predicate is None:
+            if self.__extractRelations():
+                predicate = self.__extractRelations()[0]
+            else:
+                return "Sorry, I can't find any relations in your input, please try another way."
 
         # Deal with synonyms word
         for relation, synonyms_word in self.synonyms_dict.items():
@@ -115,14 +149,35 @@ class Question:
 
         self.predicate = predicate
 
+        # Processing recommendation Questions
+        if any(word in self.question_text.lower() for word in ["recommend", "recommended", "advise", "suggest",
+                                                               "similar", "like"]):
+            print("rec_mode")
+            print(entities)
+            return self.recommender.recommend_by(entities)
+
+        # Processing CrowdSourcing questions
+        entity_idx = self.__get_entity_index(self.label_entity_dict.get(self.entities[0])[0])
+        relation_idx = self.__get_entity_index(self.label_relation_dict.get(self.predicate)[0])
+        crowd_result = self.queryExecutor.queryCrowdsourceQuestions(entity_idx,relation_idx)
+        if crowd_result:
+            inter_rater, support, reject, ans = crowd_result
+            if len(self.predicate) > 0:
+                ans = f"The {self.predicate} of {self.entities[0]} is {ans}\nInter-rater agreement: {inter_rater} Support votes: {support} Reject votes: {reject}"
+            else:
+                movie_entity = self.entities[0].capitalize()
+                ans = f'{movie_entity} is the subclass of {ans}\nInter-rater agreement: {inter_rater} Support votes: {support} Reject votes: {reject}'
+
+            return ans
+
         # Processing factual questions
-        query_result = self.queryExecutor.queryFactualQuestions(self.entity, self.predicate)
+        query_result = self.queryExecutor.queryFactualQuestions(self.entities[0], self.predicate)
         if len(query_result) != 0:
             self.question_type = 0
             return self.__generateAnswer(query_result)
         else:
             # Precessing embedding questions
-            embedding_result = self.queryExecutor.queryEmbeddingQuestions(self.entity, self.predicate)
+            embedding_result = self.queryExecutor.queryEmbeddingQuestions(self.entities[0], self.predicate)
             if embedding_result:
                 return self.answer_templates["embedding question"].format(embedding_result=embedding_result)
             else:
