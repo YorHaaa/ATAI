@@ -9,32 +9,34 @@ import spacy
 from rdflib import RDFS
 from Query import QueryExecutor
 from Recommender import Recommender
+from transformers import AutoTokenizer, AutoModelForTokenClassification
+from transformers import pipeline
+
+def get_entity_index(uri):
+    return str(uri).split('/')[-1]
+
+
+def is_relation(uri):
+    label = get_entity_index(uri)
+    return label[0] == 'P'
+
+
+def is_entity(uri):
+    label = get_entity_index(uri)
+    return label[0] == 'Q'
 
 model = spacy.load("en_core_web_trf")
 print("----Spacy model load succeed----")
+tokenizer = AutoTokenizer.from_pretrained("dslim/bert-base-NER")
+bert = AutoModelForTokenClassification.from_pretrained("dslim/bert-base-NER")
+
+bert_NER = pipeline("ner", model=bert, tokenizer=tokenizer)
+print("----BERT NER model load succeed----")
 graph = rdflib.Graph()
 graph.parse('Dataset/14_graph.nt', format='turtle')
 print("----KG load succeed----")
 recommender = Recommender(graph)
-
-class Question:
-
-    def __init__(self, question_text):
-        self.entities = None
-        self.question_text = question_text
-        self.doc = None
-        self.question_type = None
-        self.question_type_dict = {
-            "factual question" : 0,
-            "embedding question" : 1,
-            "recommendation question" : 2,
-            "crowdsource question" : 3
-        }
-        self.predicate = None
-        self.answer = None
-        self.recommender = recommender
-        # Synonyms words dictionary
-        self.synonyms_dict = {
+synonyms_dict = {
             'cast member': ['actor', 'actress', 'cast'],
             'genre': ['type', 'kind'],
             'publication date': ['release', 'date', 'airdate', 'publication', 'launch', 'broadcast', 'released',
@@ -56,8 +58,8 @@ class Question:
             'director': ['directed', 'directs'],
             'IMDb ID': ['IMDb', 'IMDB', 'imdb']
         }
-        # Answer templates
-        self.answer_templates = {
+
+answer_templates = {
             "factual question default" : """According to my records in my knowledge graph, 
             the search results of {entity}'s {predicate} are as follows : {query_result}""",
             "publication date" : "The {entity} was released in {query_result} based on my knowledge graph",
@@ -68,7 +70,51 @@ class Question:
                                    "Here is the answer compute by embedding: {embedding_result}",
             "Recommendation question" : "Here are the top 5 recommendations: {rec_result}"
         }
+all_label_dict = {str(sub): str(obj) for sub, pre, obj in graph.triples((None, RDFS.label, None))}
+entity_label_dict = {entity: label for entity, label in all_label_dict.items() if is_entity(entity)}
+relation_label_dict = {entity: label for entity, label in all_label_dict.items() if
+                                    is_relation(entity)}
+# Reverse following dictionaries, and store same label's URIs as an array
+label_entity_dict = {}
+for key, value in entity_label_dict.items():
+    if value in label_entity_dict:
+        label_entity_dict[value].append(key)
+    else:
+        label_entity_dict[value] = [key]
+
+label_relation_dict = {}
+for key, value in relation_label_dict.items():
+    if "http://www.wikidata.org/entity/" in key:
+        key = key.replace("http://www.wikidata.org/entity/", "http://www.wikidata.org/prop/direct/")
+    if value in label_relation_dict:
+        label_relation_dict[value].append(key)
+    else:
+        label_relation_dict[value] = [key]
+
+
+class Question:
+
+    def __init__(self, question_text):
+        self.entities = None
+        self.question_text = question_text
+        self.doc = None
+        self.question_type = None
+        self.question_type_dict = {
+            "factual question" : 0,
+            "embedding question" : 1,
+            "recommendation question" : 2,
+            "crowdsource question" : 3
+        }
+        self.predicate = None
+        self.bert_NER = bert_NER
+        self.answer = None
+        self.recommender = recommender
+        # Synonyms words dictionary
+        self.synonyms_dict = synonyms_dict
+        # Answer templates
+        self.answer_templates = answer_templates
         self.graph = graph
+        self.__get_entity_index = get_entity_index
 
         # Namespace
         self.WD = rdflib.Namespace('http://www.wikidata.org/entity/')
@@ -78,42 +124,13 @@ class Question:
         self.SCHEMA = rdflib.Namespace('http://schema.org/')
 
         # Build entity_label and relation_label dictionary
-        self.all_label_dict = {str(sub): str(obj) for sub, pre, obj in graph.triples((None, RDFS.label, None))}
-        self.entity_label_dict = {entity: label for entity, label in self.all_label_dict.items() if
-                                  self.__is_entity(entity)}
-        self.relation_label_dict = {entity: label for entity, label in self.all_label_dict.items() if
-                                    self.__is_relation(entity)}
-        # Reverse following dictionaries, and store same label's URIs as an array
-        label_entity_dict = {}
-        for key, value in self.entity_label_dict.items():
-            if value in label_entity_dict:
-                label_entity_dict[value].append(key)
-            else:
-                label_entity_dict[value] = [key]
+        self.all_label_dict = all_label_dict
+        self.entity_label_dict = entity_label_dict
+        self.relation_label_dict = relation_label_dict
         self.label_entity_dict = label_entity_dict
-
-        label_relation_dict = {}
-        for key, value in self.relation_label_dict.items():
-            if "http://www.wikidata.org/entity/" in key:
-                key = key.replace("http://www.wikidata.org/entity/", "http://www.wikidata.org/prop/direct/")
-            if value in label_relation_dict:
-                label_relation_dict[value].append(key)
-            else:
-                label_relation_dict[value] = [key]
         self.label_relation_dict = label_relation_dict
         self.queryExecutor = QueryExecutor(graph,self.all_label_dict,self.entity_label_dict,self.relation_label_dict
                                            ,self.label_entity_dict,self.label_relation_dict)
-
-    def __get_entity_index(self, uri):
-        return str(uri).split('/')[-1]
-
-    def __is_relation(self, uri):
-        label = self.__get_entity_index(uri)
-        return label[0] == 'P'
-
-    def __is_entity(self, uri):
-        label = self.__get_entity_index(uri)
-        return label[0] == 'Q'
 
     def parseQuestion(self):
         # If the user's input is a SPARQL query, then just returns the executing result.
@@ -124,9 +141,18 @@ class Question:
 
         # NER
         entities = []
+        # Use Spacy
         if self.__extractEntities():
             entities = self.__extractEntities()
-        else:
+
+        if not entities:
+            bert_result = self.bert_NER(self.question_text)
+            entity = ""
+            for word in bert_result:
+                entity = entity+word["word"]+" "
+            entities.append(entity)
+
+        if not entities:
             for entity, label in self.entity_label_dict.items():
                 if label.lower() in self.question_text.lower() and len(label)>= 6:
                     entities.append(label)
@@ -158,6 +184,12 @@ class Question:
             print(entities)
             return self.recommender.recommend_by(entities)
 
+        # Processing multimedia Questions
+        if any(word in self.question_text.lower() for word in ["look","picture","image","show","pic","photo"]):
+            print("image_mode")
+            print(self.entities)
+            return  self.queryExecutor.get_image(max(self.entities, key=len, default=''))
+
         # Processing CrowdSourcing questions
         entity_idx = self.__get_entity_index(self.label_entity_dict.get(max(self.entities, key=len, default=''))[0])
         relation_idx = self.__get_entity_index(self.label_relation_dict.get(self.predicate)[0])
@@ -187,7 +219,7 @@ class Question:
 
 
     def __extractEntities(self):
-        return [ent.text for ent in self.doc.ents if ent.label_ == "WORK_OF_ART"]
+        return [ent.text for ent in self.doc.ents if ent.label_ == "WORK_OF_ART" or ent.label_ == "PERSON"]
 
     def __extractRelations(self):
         predicates = []

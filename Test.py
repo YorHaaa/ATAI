@@ -1,3 +1,11 @@
-a = "http://www.wikidata.org/entity/P1258"
+from transformers import AutoTokenizer, AutoModelForTokenClassification
+from transformers import pipeline
 
-print(str(a).split('/')[-1])
+tokenizer = AutoTokenizer.from_pretrained("dslim/bert-base-NER")
+model = AutoModelForTokenClassification.from_pretrained("dslim/bert-base-NER")
+
+nlp = pipeline("ner", model=model, tokenizer=tokenizer)
+example = "Who is the director of Star Wars: Episode VI - Return of the Jedi?"
+
+ner_results = nlp(example)
+print(ner_results)

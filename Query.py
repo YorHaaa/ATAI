@@ -1,3 +1,5 @@
+import json
+
 import numpy as np
 import pandas as pd
 import editdistance
@@ -5,6 +7,10 @@ import csv
 from sklearn.metrics import pairwise_distances
 
 crowd_data = pd.read_csv('Dataset/crowd_data/crowd_data.tsv', sep='\t')
+image_file_path = 'Dataset/images.json'
+# Multimedia dataset
+with open(image_file_path, 'r') as f:
+    images_data = json.load(f)
 
 class QueryExecutor:
     def __init__(self, graph, all_label_dict, entity_label_dict, relation_label_dict,label_entity_dict,label_relation_dict):
@@ -42,6 +48,7 @@ class QueryExecutor:
         self.crowdsource_data = crowd_data
         self.crowdsource_subject_list = self.crowdsource_data['Input1ID'].unique()
         self.crowdsource_predicate_list = self.crowdsource_data['Input2ID'].unique()
+        self.images_data = images_data
 
     def querySPARQL(self, sparql):
         return str([str(s) for s, in self.graph.query(sparql)])
@@ -167,3 +174,49 @@ class QueryExecutor:
             return inter_rater,support,reject,ans
         else:
             return None
+
+    def get_image(self, entity):
+
+        entity_uri = None
+
+        entity_uri, _ = self.__get_URL_By_label(entity, "IMDb ID")
+
+        query = f"""
+            PREFIX wdt: <http://www.wikidata.org/prop/direct/>
+            SELECT ?object WHERE {{
+                <{entity_uri}> wdt:P345 ?object .
+                }}
+            """
+
+        imdb_id = [str(s) for s, in self.graph.query(query)]
+
+        if not imdb_id:
+            return f"Sorry, we couldn't find the item you mentioned."
+
+        imdb_id = imdb_id[0]
+
+        entity_type = "actor" if imdb_id.startswith("nm") else "movie" if imdb_id.startswith("tt") else None
+
+        matching_images = [
+            img for img in self.images_data
+            if imdb_id in img.get("cast" if entity_type == "actor" else "movie", [])
+        ]
+
+        if not matching_images:
+            return f"Sorry, no image found for this {entity_type}."
+
+        # priority
+        if entity_type == "actor":
+            type_priority = ["publicity"]
+            matching_images = [img for img in matching_images
+                                    if len(img.get("cast", [])) == 1
+                                  ] or matching_images
+        elif entity_type == "movie":
+            type_priority = ["poster", "still_frame", "event", "behind_the_scenes"]
+        else:
+            type_priority = ["publicity", "poster", "event", "still_frame", "behind_the_scenes"]
+
+        matching_images.sort(
+                key=lambda x: type_priority.index(x["type"]) if x["type"] in type_priority else len(type_priority))
+
+        return f"Here's the picture:image:{matching_images[0]['img'].rstrip('.jpg')}"
