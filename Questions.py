@@ -4,11 +4,11 @@ Core idea:
     2. According to the relation extracted from previous steps, generating and executing SPARQL
     3. Return output to user based on templates.
 """
+import editdistance
 import rdflib
 import spacy
 from rdflib import RDFS
 from Query import QueryExecutor
-from Recommender import Recommender
 from transformers import AutoTokenizer, AutoModelForTokenClassification
 from transformers import pipeline
 
@@ -35,7 +35,10 @@ print("----BERT NER model load succeed----")
 graph = rdflib.Graph()
 graph.parse('Dataset/14_graph.nt', format='turtle')
 print("----KG load succeed----")
+
+from Recommender import Recommender
 recommender = Recommender(graph)
+
 synonyms_dict = {
             'cast member': ['actor', 'actress', 'cast'],
             'genre': ['type', 'kind'],
@@ -149,7 +152,7 @@ class Question:
             bert_result = self.bert_NER(self.question_text)
             entity = ""
             for word in bert_result:
-                entity = entity+word["word"]+" "
+                entity = entity+word["word"].replace("##","")
             entities.append(entity)
 
         if not entities:
@@ -177,22 +180,25 @@ class Question:
 
         self.predicate = predicate
 
+        text_removed_entities = self.question_text
+        for entity in self.entities:
+            text_removed_entities = text_removed_entities.replace(entity, "")
+            # Processing multimedia Questions
+        if any(word in text_removed_entities.lower() for word in ["looks like", "look like", "look", "picture", "image", "show", "pic", "photo"]):
+            print("image_mode")
+            print(self.entities)
+            return self.queryExecutor.get_image(max(self.entities, key=len, default=''))
+
         # Processing recommendation Questions
-        if any(word in self.question_text.lower() for word in ["recommend", "recommended", "advise", "suggest",
+        if any(word in text_removed_entities.lower() for word in ["recommend", "recommended", "advise", "suggest",
                                                                "similar", "like"]):
             print("rec_mode")
             print(entities)
             return self.recommender.recommend_by(entities)
 
-        # Processing multimedia Questions
-        if any(word in self.question_text.lower() for word in ["look","picture","image","show","pic","photo"]):
-            print("image_mode")
-            print(self.entities)
-            return  self.queryExecutor.get_image(max(self.entities, key=len, default=''))
-
         # Processing CrowdSourcing questions
-        entity_idx = self.__get_entity_index(self.label_entity_dict.get(max(self.entities, key=len, default=''))[0])
-        relation_idx = self.__get_entity_index(self.label_relation_dict.get(self.predicate)[0])
+        entity_idx, relation_idx = self.__get_URL_By_label(max(self.entities, key=len, default=''), self.predicate)
+        entity_idx, relation_idx = get_entity_index(entity_idx), get_entity_index(relation_idx)
         crowd_result = self.queryExecutor.queryCrowdsourceQuestions(entity_idx,relation_idx)
         if crowd_result:
             inter_rater, support, reject, ans = crowd_result
@@ -202,7 +208,8 @@ class Question:
                 movie_entity = self.entities[0].capitalize()
                 ans = f'{movie_entity} is the subclass of {ans}\nInter-rater agreement: {inter_rater} Support votes: {support} Reject votes: {reject}'
 
-            return ans
+            return (f"According to the crowdsource data:"
+                    f"{ans}")
 
         # Processing factual questions
         query_result = self.queryExecutor.queryFactualQuestions(max(self.entities, key=len, default=''), self.predicate)
@@ -242,5 +249,33 @@ class Question:
                 return self.answer_templates["IMDb ID"].format(entity=max(self.entities, key=len, default=''), query_result=query_result)
             else:
                 return self.answer_templates["factual question default"].format(entity=max(self.entities, key=len, default=''), predicate=self.predicate, query_result=query_result)
+
+
+    def __get_URL_By_label(self, input_entity, input_predicate):
+        entity_uri = ""
+        relation_uri = ""
+        # If the entity and predicate already exist in dict, then just get its URI
+        if self.label_entity_dict.get(input_entity):
+            entity_uri = str(self.label_entity_dict[input_entity][0])
+        else:
+            # Max distance between two words
+            distance = 1000
+            for key in self.label_entity_dict.keys():
+                n = editdistance.eval(input_entity, key)
+                if n < distance:
+                    distance = n
+                    entity_uri = self.label_entity_dict[key][0]
+        # Same as relations
+        if self.label_relation_dict.get(input_predicate):
+            relation_uri = self.label_relation_dict[input_predicate][0]
+        else:
+            # Max distance between two words
+            distance = 1000
+            for key in self.label_relation_dict.keys():
+                n = editdistance.eval(input_predicate, key)
+                if n < distance:
+                    distance = n
+                    relation_uri = self.label_relation_dict[key][0]
+        return entity_uri, relation_uri
 
 

@@ -2,69 +2,72 @@ import editdistance
 from rdflib import URIRef, RDFS,Namespace
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
+from Questions import graph
+
+WD = Namespace('http://www.wikidata.org/entity/')
+WDT = Namespace('http://www.wikidata.org/prop/direct/')
+TARGET_PROPERTIES = {
+            'director': WDT['P57'],      # Property for director
+            'producer': WDT['P272'],     # Property for producer
+            'genre': WDT['P136'],        # Property for genre
+            'language': WDT['P364'],     # Property for language
+            'release_date': WDT['P577']  # Property for release date
+        }
+
+def preload_movies_with_features(graph):
+    movies = {}  # Dictionary to hold movie URIs and their features
+    name_to_uri = {}  # Dictionary to map movie names to their URIs
+    uri_to_name = {}
+
+    def get_subclasses(entity, graph):
+        subclasses = set()
+        for subclass in graph.subjects(WDT['P279'], entity):
+            subclasses.add(subclass)
+            subclasses.update(get_subclasses(subclass, graph))
+        return subclasses
+
+    film_types = get_subclasses(WD['Q11424'], graph)
+    film_types.add(WD['Q11424'])
+    # Iterate over all movie entities in the graph
+    for film_type in film_types:
+        for movie_uri, _, _ in graph.triples((None, WDT['P31'], film_type)):
+            features = []  # List to hold features of the current movie
+            # Iterate over the target properties to collect features
+            for prop_name, prop_uri in TARGET_PROPERTIES.items():
+                if prop_name == "release_date":
+                    for _, _, value in graph.triples((movie_uri, prop_uri, None)):
+                        date = str(value)[0:3]
+                        features.append(f"{prop_name}::{date}|")  # Append feature in the format "property::value"
+                else:
+                    for _, _, value in graph.triples((movie_uri, prop_uri, None)):
+                        # {prop_name}::
+                        features.append(f"{prop_name}::{value}|")  # Append feature in the format "property::value"
+            feature_string = " ".join(features)  # Create a single string of features
+            movies[str(movie_uri)] = feature_string  # Store the feature string in the movies dictionary
+
+            # Retrieve the movie's label (name) and map it to its URI
+            for _, _, label in graph.triples((movie_uri, RDFS.label, None)):
+                label_str = str(label)
+                uri_to_name[str(movie_uri)] = label_str
+                if label_str not in name_to_uri:
+                    name_to_uri[label_str] = []  # Initialize list if not present
+                name_to_uri[label_str].append(movie_uri)  # Add the movie URI to the list
+    print("movie feature dic ok")
+    return movies, name_to_uri, uri_to_name  # Return the movies dictionary and name-to-URI mapping
+
+movies, name_to_uri, uri_to_name = preload_movies_with_features(graph)
 
 class Recommender:
     def __init__(self,graph):
         self.graph = graph
-        
         # Define namespaces for Wikidata entities and properties
-        self.WD = Namespace('http://www.wikidata.org/entity/')
+        self.WD = WD
         self.WDT = Namespace('http://www.wikidata.org/prop/direct/')
 
         # Define a dictionary to filter specific properties of movies
-        self.TARGET_PROPERTIES = {
-            'director': self.WDT['P57'],      # Property for director
-            'producer': self.WDT['P272'],     # Property for producer
-            'genre': self.WDT['P136'],        # Property for genre
-            'language': self.WDT['P364'],     # Property for language
-            'release_date': self.WDT['P577']  # Property for release date
-        }
-
+        self.TARGET_PROPERTIES = TARGET_PROPERTIES
         # Preload movie features and name-to-URI mapping
-        self.movies, self.name_to_uri, self.uri_to_name = self.preload_movies_with_features(graph)
-
-    def preload_movies_with_features(self,graph):
-        movies = {}  # Dictionary to hold movie URIs and their features
-        name_to_uri = {}  # Dictionary to map movie names to their URIs
-        uri_to_name = {}
-
-        def get_subclasses(entity, graph):
-            subclasses = set()
-            for subclass in graph.subjects(self.WDT['P279'], entity):
-                subclasses.add(subclass)
-                subclasses.update(get_subclasses(subclass, graph))
-            return subclasses
-
-        film_types = get_subclasses(self.WD['Q11424'], graph)
-        film_types.add(self.WD['Q11424'])
-        # Iterate over all movie entities in the graph
-        for film_type in film_types:
-            for movie_uri, _, _ in graph.triples((None, self.WDT['P31'], film_type)):
-                features = []  # List to hold features of the current movie
-                # Iterate over the target properties to collect features
-                for prop_name, prop_uri in self.TARGET_PROPERTIES.items():
-                    if prop_name == "release_date":
-                        for _, _, value in graph.triples((movie_uri, prop_uri, None)):
-                            date = str(value)[0:3]
-                            features.append(f"{prop_name}::{date}|")  # Append feature in the format "property::value"
-                    else:
-                        for _, _, value in graph.triples((movie_uri, prop_uri, None)):
-                            # {prop_name}::
-                            features.append(f"{prop_name}::{value}|")  # Append feature in the format "property::value"
-                feature_string = " ".join(features)  # Create a single string of features
-                movies[str(movie_uri)] = feature_string  # Store the feature string in the movies dictionary
-            
-        # Retrieve the movie's label (name) and map it to its URI
-                for _, _, label in graph.triples((movie_uri, RDFS.label, None)):
-                    label_str = str(label)
-                    uri_to_name[str(movie_uri)] = label_str
-                    if label_str not in name_to_uri:
-                        name_to_uri[label_str] = []  # Initialize list if not present
-                    name_to_uri[label_str].append(movie_uri)  # Add the movie URI to the list
-        print("movie feature dic ok")
-        return movies, name_to_uri, uri_to_name  # Return the movies dictionary and name-to-URI mapping
-
-
+        self.movies, self.name_to_uri, self.uri_to_name = movies, name_to_uri, uri_to_name
 
     def recommend_by(self, movie_names, top_k=5):
         user_movie_uris = []  # List to hold URIs of user-provided movies
